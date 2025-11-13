@@ -1,0 +1,21 @@
+# Cline Rules for langgraph-kusto
+
+## Documentation
+- Never add module-level docstrings
+
+## Type Annotations
+- Always prefer primitive annotations (`list`, `dict`, `set`, `tuple`) over typing module annotations (`List`, `Dict`, `Set`, `Tuple`)
+- Use `|` for union types instead of `Union` (e.g., `str | None` instead of `Optional[str]` or `Union[str, None]`)
+
+## Data Structures
+- Prefer dataclasses over JSON or plain classes for data
+- Always use `slots=True` when defining dataclasses
+- Use `field(default_factory=...)` for mutable default values in dataclasses
+
+## Function Arguments
+- Prefer keyword-only arguments for non-obvious parameters (use `*` separator)
+- Use explicit type hints for all function parameters and return values
+
+## Imports
+- Avoid wildcard imports (`from module import *`)
+- Group imports: standard library, third-party, local (separated by blank lines)
