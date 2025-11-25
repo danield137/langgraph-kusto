@@ -6,6 +6,7 @@
 ## Type Annotations
 - Always prefer primitive annotations (`list`, `dict`, `set`, `tuple`) over typing module annotations (`List`, `Dict`, `Set`, `Tuple`)
 - Use `|` for union types instead of `Union` (e.g., `str | None` instead of `Optional[str]` or `Union[str, None]`)
+- Use `from __future__ import annotations` to defer type annotation evaluation
 
 ## Data Structures
 - Prefer dataclasses over JSON or plain classes for data
@@ -19,3 +20,11 @@
 ## Imports
 - Avoid wildcard imports (`from module import *`)
 - Group imports: standard library, third-party, local (separated by blank lines)
+
+## Time
+- Use `datetime.now(timezone.utc)` instead of `datetime.utcnow()`
+
+## Style
+- Spaces instead of tabs for indentation
+- Line length limit: 120 characters
+- Use f-strings for string formatting instead of `%` or `str.format()`

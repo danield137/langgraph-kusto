@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langgraph-kusto"
+version = "0.0.1"
+description = "LangGraph vector store implementation for Azure Data Explorer (Kusto) - PRE-ALPHA VERSION"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Daniel Dror", email = "danield137@gmail.com"},
+]
+maintainers = [
+    {name = "Daniel Dror", email = "danield137@gmail.com"},
+]
+keywords = ["langgraph", "kusto", "azure", "eventhouse", "fabric", "data-explorer", "vector-store", "llm"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "langgraph==1.0.3",
+    "azure-kusto-data>=4.2.0",
+    "azure-identity>=1.12.0",
+    "termcolor==3.2.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/danield137/langgraph-kusto"
+"Bug Reports" = "https://github.com/danield137/langgraph-kusto/issues"
+"Source" = "https://github.com/danield137/langgraph-kusto"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=22.0",
+    "isort>=5.0",
+]
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120
