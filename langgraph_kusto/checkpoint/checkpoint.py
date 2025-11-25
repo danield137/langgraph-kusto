@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import ast
 import json
-import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import ormsgpack
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
@@ -17,56 +16,15 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
     get_checkpoint_id,
 )
+from langgraph.checkpoint.serde.jsonplus import _msgpack_ext_hook_to_json
 
 from ..common.kusto_client import KustoClient
 from ..store.kql_builder import serialize_value
-
-
-def _to_serializable(data: Any) -> Any:
-    if hasattr(data, "to_json") and callable(getattr(data, "to_json")):
-        value = data.to_json()
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError:
-                return value
-        return _to_serializable(value)
-
-    if isinstance(data, dict):
-        return {k: _to_serializable(v) for k, v in data.items()}
-    if isinstance(data, list):
-        return [_to_serializable(v) for v in data]
-    if isinstance(data, tuple):
-        # Convert tuples to lists for Kusto dynamic type (JSON arrays)
-        return [_to_serializable(v) for v in data]
-    if isinstance(data, set):
-        return [_to_serializable(v) for v in data]
-    if isinstance(data, uuid.UUID):
-        return str(data)
-
-    return data
-
-
-def serializable_to_json(data: Any) -> str:
-    # Step 1: produce standard JSON
-    valid_json = json.dumps(_to_serializable(data))
-
-    # Step 2: load back into Python literal
-    # This ensures we convert into a proper Python dict/list/str/etc.
-    py_obj = json.loads(valid_json)
-
-    # Step 3: dump using Python repr → single quotes
-    # repr() is safe because it's a lossless Python literal representation
-    result = repr(py_obj)
-
-    return result
-
 
 @dataclass(slots=True)
 class KustoCheckpointConfig:
     client: KustoClient
     table_name: str = "LangGraphCheckpoints"
-
 
 class KustoCheckpointSaver(BaseCheckpointSaver[str]):
     def __init__(self, *, config: KustoCheckpointConfig) -> None:
@@ -87,11 +45,8 @@ class KustoCheckpointSaver(BaseCheckpointSaver[str]):
         deleted: bool = False,
     ) -> None:
         """Insert a row into the raw checkpoint table using set-or-append."""
-        # Get current timestamp
         created_at = datetime.now(timezone.utc).isoformat()
 
-        # Build insert command using set-or-append for more predictable behavior
-        # Use serialize_value to properly handle all types (strings, bools, etc.)
         command = f""".set-or-append {self._raw_table_name} <|
 print 
     ThreadId={serialize_value(thread_id)}, 
@@ -113,10 +68,8 @@ print
         writes: Sequence,
     ) -> None:
         """Insert a row into the raw checkpoint writes table."""
-        # Get current timestamp
         created_at = datetime.now(timezone.utc).isoformat()
 
-        # Build insert command using set-or-append
         command = f""".set-or-append {self._writes_raw_table_name} <|
 print 
     ThreadId={serialize_value(thread_id)}, 
@@ -161,13 +114,15 @@ print
 
         row = result.primary_results[0][0]
 
-        # Deserialize the checkpoint
+        # Deserialize the checkpoint using serde
         snapshot_data = row["Snapshot"]
-        checkpoint = None
         if isinstance(snapshot_data, str):
-            checkpoint = json.loads(snapshot_data)
+            # If it's a string, encode and use serde
+            checkpoint = self.serde.loads_typed(("json", snapshot_data.encode("utf-8")))
         elif isinstance(snapshot_data, dict):
-            checkpoint = snapshot_data
+            # If it's a dict (from Kusto dynamic), convert to msgpack bytes then use serde
+            msgpack_bytes = ormsgpack.packb(snapshot_data)
+            checkpoint = self.serde.loads_typed(("msgpack", msgpack_bytes))
         else:
             raise TypeError(f"Unexpected snapshot data type: {type(snapshot_data)}")
 
@@ -187,10 +142,15 @@ print
             for writes_row in writes_result.primary_results[0]:
                 writes_data = writes_row["Writes"]
                 if writes_data:
+                    # Deserialize writes using serde
                     if isinstance(writes_data, str):
-                        writes_list = json.loads(writes_data)
+                        writes_list = self.serde.loads_typed(("json", writes_data.encode("utf-8")))
+                    elif isinstance(writes_data, dict | list):
+                        msgpack_bytes = ormsgpack.packb(writes_data)
+                        writes_list = self.serde.loads_typed(("msgpack", msgpack_bytes))
                     else:
                         writes_list = writes_data
+                    
                     # Convert list of lists back to list of tuples for LangGraph
                     if isinstance(writes_list, list):
                         writes_list = [tuple(item) if isinstance(item, list) else item for item in writes_list]
@@ -288,21 +248,28 @@ print
             return
 
         for row in result.primary_results[0]:
-            # Deserialize the checkpoint
+            # Deserialize the checkpoint using serde
             snapshot_data = row["Snapshot"]
             if isinstance(snapshot_data, str):
-                checkpoint = json.loads(snapshot_data)
+                checkpoint = self.serde.loads_typed(("json", snapshot_data.encode("utf-8")))
+            elif isinstance(snapshot_data, dict):
+                msgpack_bytes = ormsgpack.packb(snapshot_data)
+                checkpoint = self.serde.loads_typed(("msgpack", msgpack_bytes))
             else:
                 checkpoint = snapshot_data
 
-            # Deserialize writes if present
-            writes_data = row["Writes"]
+            # Deserialize writes if present using serde
+            writes_data = row.get("Writes")
             pending_writes = None
             if writes_data:
                 if isinstance(writes_data, str):
-                    pending_writes = json.loads(writes_data)
+                    pending_writes = self.serde.loads_typed(("json", writes_data.encode("utf-8")))
+                elif isinstance(writes_data, dict | list):
+                    msgpack_bytes = ormsgpack.packb(writes_data)
+                    pending_writes = self.serde.loads_typed(("msgpack", msgpack_bytes))
                 else:
                     pending_writes = writes_data
+                
                 # Convert list of lists back to list of tuples for LangGraph
                 if isinstance(pending_writes, list):
                     pending_writes = [tuple(item) if isinstance(item, list) else item for item in pending_writes]
@@ -355,9 +322,23 @@ print
         checkpoint_id = checkpoint["id"]
         parent_checkpoint_id = config["configurable"].get("checkpoint_id", "")
 
-        # Serialize the checkpoint using LangGraph's serde, which can handle
-        # LangChain message objects such as HumanMessage/AIMessage.
-        snapshot = _to_serializable(checkpoint)
+        # Serialize the checkpoint using serde, then convert to dict for Kusto ingestion
+        type_, serialized_bytes = self.serde.dumps_typed(checkpoint)
+        if type_ == "msgpack":
+            # Convert msgpack bytes to JSON-compatible dict via ormsgpack
+            # Use the jsonplus ext_hook to convert extensions to plain JSON
+            snapshot = ormsgpack.unpackb(
+                serialized_bytes, 
+                ext_hook=_msgpack_ext_hook_to_json,
+                option=ormsgpack.OPT_NON_STR_KEYS
+            )
+        elif type_ == "json":
+            snapshot = json.loads(serialized_bytes.decode("utf-8"))
+        elif type_ == "null":
+            snapshot = {}
+        else:
+            # Fallback: try to decode as JSON
+            snapshot = json.loads(serialized_bytes.decode("utf-8"))
 
         self._insert_checkpoint_row(
             thread_id=thread_id,
@@ -367,7 +348,6 @@ print
             snapshot=snapshot,
         )
 
-        # Return updated config with checkpoint_id
         return {
             "configurable": {
                 "thread_id": thread_id,
@@ -390,10 +370,23 @@ print
         if not checkpoint_id:
             return
 
-        # Serialize the writes
-        serialized_writes = _to_serializable(list(writes))
+        # Serialize the writes using serde, then convert to dict/list for Kusto ingestion
+        type_, serialized_bytes = self.serde.dumps_typed(list(writes))
+        if type_ == "msgpack":
+            # Convert msgpack bytes to JSON-compatible structure via ormsgpack
+            serialized_writes = ormsgpack.unpackb(
+                serialized_bytes,
+                ext_hook=_msgpack_ext_hook_to_json,
+                option=ormsgpack.OPT_NON_STR_KEYS
+            )
+        elif type_ == "json":
+            serialized_writes = json.loads(serialized_bytes.decode("utf-8"))
+        elif type_ == "null":
+            serialized_writes = []
+        else:
+            # Fallback: try to decode as JSON
+            serialized_writes = json.loads(serialized_bytes.decode("utf-8"))
 
-        # Insert into the checkpoint writes table
         self._insert_checkpoint_writes_row(
             thread_id=thread_id,
             checkpoint_ns=checkpoint_ns,
