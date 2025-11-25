@@ -17,8 +17,6 @@ This example shows how to use the KustoCheckpointSaver to persist conversation s
 allowing the chatbot to resume conversations across sessions.
 """
 
-from typing import Annotated
-
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.graph.message import MessagesState
@@ -28,11 +26,13 @@ from langgraph_kusto.checkpoint import KustoCheckpointConfig, KustoCheckpointSav
 from langgraph_kusto.common.kusto_client import KustoClient
 from langgraph_kusto.setup_environment import initialize_kusto
 
+
 def chatbot(state: MessagesState) -> dict:
     """Chatbot that uses an LLM to respond to messages."""
     llm = get_llm()
     response = llm.invoke(state["messages"])
     return {"messages": [response]}
+
 
 def create_graph_with_checkpoint():
     """Create a LangGraph with checkpoint support."""
@@ -55,6 +55,7 @@ def create_graph_with_checkpoint():
     app = workflow.compile(checkpointer=checkpointer)
 
     return app
+
 
 def main():
     """Run the chatbot example demonstrating checkpoint persistence."""
@@ -89,6 +90,7 @@ def main():
     print(f"Bot: {bot_message.content}\n")
 
     print("Conversation saved! The checkpoint was successfully persisted and reloaded.")
+
 
 if __name__ == "__main__":
     main()

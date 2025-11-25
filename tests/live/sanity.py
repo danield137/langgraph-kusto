@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 import dotenv
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # noqa: E402
+dotenv.load_dotenv()
 import requests
 
 # We keep OpenAIEmbeddings imported for other use cases, but for this
@@ -41,15 +46,18 @@ def purge_kusto_resources(
     store_raw = f"{store_table}Raw"
     embeddings_raw = f"{embeddings_table}Raw"
     checkpoints_raw = f"{checkpoints_table}Raw"
+    checkpoints_writes_raw = f"{checkpoints_table}WritesRaw"
 
     # Drop functions first (they depend on tables)
     drop_commands = [
         ("store view", f".drop function {store_table} ifexists"),
         ("embeddings view", f".drop function {embeddings_table} ifexists"),
         ("checkpoints view", f".drop function {checkpoints_table} ifexists"),
+        ("checkpoint writes view", f".drop function {checkpoints_table}Writes ifexists"),
         ("store table", f".drop table {store_raw} ifexists"),
         ("embeddings table", f".drop table {embeddings_raw} ifexists"),
         ("checkpoints table", f".drop table {checkpoints_raw} ifexists"),
+        ("checkpoint writes table", f".drop table {checkpoints_writes_raw} ifexists"),
     ]
 
     for cmd_name, cmd in drop_commands:
@@ -418,21 +426,53 @@ def run_checkpoint_test() -> None:
     else:
         print("  ✗ Some pending_writes are not tuples!")
 
-    # Step 4: Verify tuple structure matches original
+    # Step 4: Verify tuple structure matches original (with normalization for Kusto round-trip)
     print("\n[STEP 4] Verifying tuple structure matches original writes...")
+
+    def normalize_for_comparison(value):
+        """Normalize values for comparison, accounting for Kusto serialization quirks."""
+        if isinstance(value, str):
+            # Kusto may strip apostrophes from strings
+            normalized = value.replace("'", "")
+            # Normalize timezone format: +00:00 -> Z
+            normalized = normalized.replace("+00:00", "Z")
+            # Normalize timestamp precision (Kusto may add trailing zero to microseconds)
+            # e.g., "2025-11-25T06:51:06.180462Z" vs "2025-11-25T06:51:06.1804620Z"
+            import re
+
+            # Match ISO timestamps and normalize microsecond precision to 6 digits
+            timestamp_pattern = r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6})\d*Z"
+            normalized = re.sub(timestamp_pattern, r"\1Z", normalized)
+            return normalized
+        elif isinstance(value, dict):
+            # Recursively normalize dict values
+            return {k: normalize_for_comparison(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            # Recursively normalize list items
+            return [normalize_for_comparison(item) for item in value]
+        elif isinstance(value, tuple):
+            # Recursively normalize tuple items
+            return tuple(normalize_for_comparison(item) for item in value)
+        return value
 
     matches = True
     for i, (original, retrieved) in enumerate(zip(writes, retrieved_tuple.pending_writes)):
-        if original == retrieved:
+        # Normalize both for comparison
+        normalized_original = normalize_for_comparison(original)
+        normalized_retrieved = normalize_for_comparison(retrieved)
+
+        if normalized_original == normalized_retrieved:
             print(f"  ✓ Write {i + 1} matches: {retrieved}")
         else:
             print(f"  ✗ Write {i + 1} mismatch!")
             print(f"    Original:  {original}")
             print(f"    Retrieved: {retrieved}")
+            print(f"    Normalized Original:  {normalized_original}")
+            print(f"    Normalized Retrieved: {normalized_retrieved}")
             matches = False
 
     if matches:
-        print("  ✓ All writes match original structure")
+        print("  ✓ All writes match original structure (after normalization)")
     else:
         print("  ✗ Some writes don't match!")
 

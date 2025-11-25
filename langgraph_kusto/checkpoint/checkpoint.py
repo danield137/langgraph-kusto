@@ -21,10 +21,12 @@ from langgraph.checkpoint.serde.jsonplus import _msgpack_ext_hook_to_json
 from ..common.kusto_client import KustoClient
 from ..store.kql_builder import serialize_value
 
+
 @dataclass(slots=True)
 class KustoCheckpointConfig:
     client: KustoClient
     table_name: str = "LangGraphCheckpoints"
+
 
 class KustoCheckpointSaver(BaseCheckpointSaver[str]):
     def __init__(self, *, config: KustoCheckpointConfig) -> None:
@@ -150,7 +152,7 @@ print
                         writes_list = self.serde.loads_typed(("msgpack", msgpack_bytes))
                     else:
                         writes_list = writes_data
-                    
+
                     # Convert list of lists back to list of tuples for LangGraph
                     if isinstance(writes_list, list):
                         writes_list = [tuple(item) if isinstance(item, list) else item for item in writes_list]
@@ -205,7 +207,7 @@ print
         thread_id = config["configurable"].get("thread_id") if config else None
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "") if config else ""
 
-        # Build query
+        # Build query for checkpoints
         query_parts = [f"{self._table_name}()"]
 
         # Add filters
@@ -241,7 +243,20 @@ print
         if limit:
             query_parts.append(f"| take {limit}")
 
-        query = "\n".join(query_parts)
+        checkpoints_query = "\n".join(query_parts)
+
+        # Build query with join to include pending writes
+        query = f"""
+let checkpoints = {checkpoints_query};
+checkpoints
+| join kind=leftouter (
+    {self._writes_table_name}
+    | summarize AllWrites = make_list(Writes) by ThreadId, CheckpointNamespace, CheckpointId
+) on ThreadId, CheckpointNamespace, CheckpointId
+| project-away ThreadId1, CheckpointNamespace1, CheckpointId1
+| order by CreatedAt desc
+"""
+
         result = self._client.execute_query(query)
 
         if not result or not result.primary_results:
@@ -259,20 +274,33 @@ print
                 checkpoint = snapshot_data
 
             # Deserialize writes if present using serde
-            writes_data = row.get("Writes")
+            # AllWrites is a list of 'Writes' entries (one per task), each of which is a list of writes
+            raw_writes_list = row["AllWrites"] if "AllWrites" in row else None
             pending_writes = None
-            if writes_data:
-                if isinstance(writes_data, str):
-                    pending_writes = self.serde.loads_typed(("json", writes_data.encode("utf-8")))
-                elif isinstance(writes_data, dict | list):
-                    msgpack_bytes = ormsgpack.packb(writes_data)
-                    pending_writes = self.serde.loads_typed(("msgpack", msgpack_bytes))
-                else:
-                    pending_writes = writes_data
-                
-                # Convert list of lists back to list of tuples for LangGraph
-                if isinstance(pending_writes, list):
-                    pending_writes = [tuple(item) if isinstance(item, list) else item for item in pending_writes]
+
+            if raw_writes_list:
+                all_writes = []
+                for writes_data in raw_writes_list:
+                    if not writes_data:
+                        continue
+
+                    # Deserialize this task's writes
+                    if isinstance(writes_data, str):
+                        task_writes = self.serde.loads_typed(("json", writes_data.encode("utf-8")))
+                    elif isinstance(writes_data, dict | list):
+                        msgpack_bytes = ormsgpack.packb(writes_data)
+                        task_writes = self.serde.loads_typed(("msgpack", msgpack_bytes))
+                    else:
+                        task_writes = writes_data
+
+                    # Convert list of lists back to list of tuples for LangGraph
+                    if isinstance(task_writes, list):
+                        task_writes = [tuple(item) if isinstance(item, list) else item for item in task_writes]
+
+                    all_writes.extend(task_writes)
+
+                if all_writes:
+                    pending_writes = all_writes
 
             # Build metadata
             metadata: CheckpointMetadata = {
@@ -328,9 +356,7 @@ print
             # Convert msgpack bytes to JSON-compatible dict via ormsgpack
             # Use the jsonplus ext_hook to convert extensions to plain JSON
             snapshot = ormsgpack.unpackb(
-                serialized_bytes, 
-                ext_hook=_msgpack_ext_hook_to_json,
-                option=ormsgpack.OPT_NON_STR_KEYS
+                serialized_bytes, ext_hook=_msgpack_ext_hook_to_json, option=ormsgpack.OPT_NON_STR_KEYS
             )
         elif type_ == "json":
             snapshot = json.loads(serialized_bytes.decode("utf-8"))
@@ -375,9 +401,7 @@ print
         if type_ == "msgpack":
             # Convert msgpack bytes to JSON-compatible structure via ormsgpack
             serialized_writes = ormsgpack.unpackb(
-                serialized_bytes,
-                ext_hook=_msgpack_ext_hook_to_json,
-                option=ormsgpack.OPT_NON_STR_KEYS
+                serialized_bytes, ext_hook=_msgpack_ext_hook_to_json, option=ormsgpack.OPT_NON_STR_KEYS
             )
         elif type_ == "json":
             serialized_writes = json.loads(serialized_bytes.decode("utf-8"))
