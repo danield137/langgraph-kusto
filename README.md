@@ -1,3 +1,6 @@
+![PyPI - Version](https://img.shields.io/pypi/v/langgraph-kusto)
+![PyPI - Downloads](https://img.shields.io/pypi/dm/langgraph-kusto)
+
 # langgraph-kusto
 
 This repository provides Kusto-backed storage and checkpointing for LangGraph, including optional semantic search using Kusto's `ai_embeddings` plugin.
